@@ -1,0 +1,13 @@
+org.apache.kafka.common.errors.WakeupException: null
+at org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient.maybeTriggerWakeup(ConsumerNetworkClient.java:514)
+at org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient.poll(ConsumerNetworkClient.java:278)
+at org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient.poll(ConsumerNetworkClient.java:236)
+at org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient.poll(ConsumerNetworkClient.java:215)
+at org.apache.kafka.clients.consumer.internals.ConsumerCoordinator.commitOffsetsSync(ConsumerCoordinator.java:1003)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1491)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1391)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1348)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumer.commit(UopKafkaEventConsumer.java:263)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumer.pollBatch(UopKafkaEventConsumer.java:147)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumerInitializer.lambda$afterPropertiesSet$0(UopKafkaEventConsumerInitializer.java:23)
+at java.base/java.lang.Thread.run(Unknown Source)

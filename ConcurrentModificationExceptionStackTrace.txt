@@ -1,0 +1,10 @@
+java.util.ConcurrentModificationException: KafkaConsumer is not safe for multi-threaded access
+at org.apache.kafka.clients.consumer.KafkaConsumer.acquire(KafkaConsumer.java:2464)
+at org.apache.kafka.clients.consumer.KafkaConsumer.acquireAndEnsureOpen(KafkaConsumer.java:2448)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1487)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1391)
+at org.apache.kafka.clients.consumer.KafkaConsumer.commitSync(KafkaConsumer.java:1348)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumer.commit(UopKafkaEventConsumer.java:263)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumer.pollBatch(UopKafkaEventConsumer.java:101)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumerInitializer.lambda$afterPropertiesSet$0(UopKafkaEventConsumerInitializer.java:23)
+at java.base/java.lang.Thread.run(Unknown Source)

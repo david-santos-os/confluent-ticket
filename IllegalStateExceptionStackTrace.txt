@@ -1,0 +1,6 @@
+java.lang.IllegalStateException: This consumer has already been closed.
+at org.apache.kafka.clients.consumer.KafkaConsumer.acquireAndEnsureOpen(KafkaConsumer.java:2451)
+at org.apache.kafka.clients.consumer.KafkaConsumer.seek(KafkaConsumer.java:1581)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumer.pollBatch(UopKafkaEventConsumer.java:121)
+at com.outsystems.udp.processing.deliver.kafka.UopKafkaEventConsumerInitializer.lambda$afterPropertiesSet$0(UopKafkaEventConsumerInitializer.java:23)
+at java.base/java.lang.Thread.run(Unknown Source)
