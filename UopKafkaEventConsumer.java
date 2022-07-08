@@ -1,16 +1,12 @@
 package com.outsystems.udp.processing.deliver.kafka;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.outsystems.udp.processing.deliver.component.UopKafkaEventDeliveryService;
 import com.outsystems.udp.processing.deliver.config.ConfigProps;
 import com.outsystems.udp.processing.exception.RetryableRuntimeException;
-import com.outsystems.udp.processing.exception.UopProcessingException;
 import com.outsystems.udp.processing.kafka.KafkaConsumerThreadMetadataProvider;
 import com.outsystems.udp.processing.metrics.MetricProducer;
 import com.outsystems.udp.processing.metrics.MetricUtils;
 import com.outsystems.udp.processing.model.DataTypeName;
-import com.outsystems.udp.processing.model.ExceptionMessage;
 import com.outsystems.udp.processing.model.UopKafkaEvent;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
@@ -34,16 +30,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static com.outsystems.udp.processing.deliver.utils.KafkaUtils.getConsumerGroupId;
 import static com.outsystems.udp.processing.deliver.utils.KafkaUtils.getInTopicName;
-import static org.springframework.util.StringUtils.hasLength;
 
 public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvider, InitializingBean, DisposableBean {
 
-    public static final String NULL_RECORD_MSG = "The ConsumerRecord was null because the poll method threw an exception. No further information available.";
-    public static final String JSON_PROCESSING_MSG = "Tried to handle an unexpected exception but was unable to convert original record to json.";
-
     private static final Logger LOGGER = LoggerFactory.getLogger(UopKafkaEventConsumer.class);
 
-    private final ObjectMapper objectMapper;
     protected final KafkaConsumer<String, UopKafkaEvent> kafkaConsumer;
     private final Map<String, Long> kafkaConsumerThreadMetadata;
     private final ConfigurableApplicationContext context;
@@ -67,7 +58,6 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
         this.context = context;
         this.metricProducer = new MetricProducer(meterRegistry);
         this.kafkaConsumer = kafkaConsumer;
-        this.objectMapper = new ObjectMapper();
         this.kafkaConsumerThreadMetadata = new ConcurrentHashMap<>();
         this.deliveryService = deliveryService;
     }
@@ -106,47 +96,37 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
             incrementDestinationErrorCounter(records);
             // E.g. Bad request. Log and move on.
             if (!e.isRetryable()) {
-                handleFailureAndCommit(records, e, false);
+                LOGGER.error("Failed to deliver message. Not retryable exception, committing offset.", e);
+                handleFailureAndCommit(records, e);
             } else {
                 // potentially retryable error. Don't commit the offset. Tell the consumer to get this record again.
-                // Unless it's already too old in which case, commit and move on.
-                if (hasExpired(records)) {
-                    LOGGER.error("Failed to deliver message. Message has expired. Committing offset.", e);
-                    handleFailureAndCommit(records, e, true);
-                } else {
-                    LOGGER.error("Failed to deliver message. Offset not committed. ", e);
-                    if (records != null && !records.isEmpty()) {
-                        ConsumerRecord<String, UopKafkaEvent> firstRecord = records.iterator().next();
-                        try {
-                            kafkaConsumer.seek(new TopicPartition(firstRecord.topic(), firstRecord.partition()), firstRecord.offset());
-                            retrying = true;
-                        } catch (Throwable throwable) {
-                            incrementDeliveryErrorCounters(records, throwable);
-                            LOGGER.error("!!!!!!!! Unable to set Kafka Offset. This is likely to be a bug (such as trying" +
-                                " to set a negative offset, or read from an incorrect partition, or a multithreading issue). " +
-                                " Shutting down application !!!!!!!!!", throwable);
-                            System.exit(SpringApplication.exit(context));
-                        }
-                    }
-                    // As it failed we should backoff for a moment before trying again
+                LOGGER.error("Failed to deliver message. Offset not committed.", e);
+                if (records != null && !records.isEmpty()) {
+                    ConsumerRecord<String, UopKafkaEvent> firstRecord = records.iterator().next();
                     try {
-                        Thread.sleep(configs.getUopDeliveryBackoffMs());
-                    } catch (InterruptedException ex) {
-                        LOGGER.error("Thread interrupted whilst during backoff");
-                        throw new RuntimeException("Unexpected interrupt", ex);
+                        kafkaConsumer.seek(new TopicPartition(firstRecord.topic(), firstRecord.partition()), firstRecord.offset());
+                        retrying = true;
+                    } catch (Exception ex) {
+                        incrementDeliveryErrorCounters(records, ex);
+                        LOGGER.error("!!!!!!!! Unable to set Kafka Offset. This is likely to be a bug (such as trying" +
+                            " to set a negative offset, or read from an incorrect partition, or a multithreading issue). " +
+                            " Shutting down application !!!!!!!!!", ex);
+                        System.exit(SpringApplication.exit(context));
                     }
                 }
+                // As it failed we should backoff for a moment before trying again
+                try {
+                    Thread.sleep(configs.getUopDeliveryBackoffMs());
+                } catch (InterruptedException ex) {
+                    LOGGER.error("Thread interrupted whilst during backoff");
+                    throw new RuntimeException("Unexpected interrupt", ex);
+                }
             }
-        } catch (Throwable t) {
-            incrementDeliveryErrorCounters(records, t);
-            if (t instanceof UopProcessingException uoppe) {
-                handleFailure(uoppe);
-            } else {
-                handleFailure(t, records, null);
-            }
+        } catch (Exception ex) {
+            incrementDeliveryErrorCounters(records, ex);
+            LOGGER.error("Failed to deliver message. Committing offset.", ex);
             commit(records);
         }
-        postPoll();
     }
 
     private void incrementTotalDeliveryCounter(ConsumerRecords<String, UopKafkaEvent> records) {
@@ -162,11 +142,7 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
         }
     }
 
-    private void incrementDeliveryErrorCounters(ConsumerRecords<String, UopKafkaEvent> records, Throwable t) {
-        incrementDeliveryErrorCounters(records, t, false);
-    }
-
-    private void incrementDeliveryErrorCounters(ConsumerRecords<String, UopKafkaEvent> records, Throwable t, boolean isExpired) {
+    private void incrementDeliveryErrorCounters(ConsumerRecords<String, UopKafkaEvent> records, Exception ex) {
         if (records != null) {
             for (ConsumerRecord<String, UopKafkaEvent> record : records) {
                 metricProducer
@@ -176,15 +152,8 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
 
                 metricProducer
                     .exceptionsTotalCounter()
-                    .withTags(Tag.of(MetricUtils.METRIC_LABEL_EXCEPTION_TYPE, t.getClass().getName()))
+                    .withTags(Tag.of(MetricUtils.METRIC_LABEL_EXCEPTION_TYPE, ex.getClass().getName()))
                     .increment();
-
-                if (isExpired) {
-                    metricProducer
-                        .deliveryMessagesExpiredCounter()
-                        .withTags(record.value())
-                        .increment();
-                }
             }
         }
     }
@@ -199,22 +168,8 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
         }
     }
 
-    private boolean hasExpired(ConsumerRecords<String, UopKafkaEvent> records) {
-        if (records != null) {
-            ConsumerRecord<String, UopKafkaEvent> firstRecord = records.iterator().next();
-            return System.currentTimeMillis() - firstRecord.timestamp() > configs.getUopMessageTimeoutMs();
-        }
-        return false;
-
-    }
-
-    private void handleFailureAndCommit(ConsumerRecords<String, UopKafkaEvent> records, Throwable t, boolean isExpired) {
-        incrementDeliveryErrorCounters(records, t, isExpired);
-        if (t.getCause() != null) {
-            handleFailure(t.getCause(), records, t.getMessage());
-        } else {
-            handleFailure(t, records, null);
-        }
+    private void handleFailureAndCommit(ConsumerRecords<String, UopKafkaEvent> records, Exception ex) {
+        incrementDeliveryErrorCounters(records, ex);
         commit(records);
     }
 
@@ -293,91 +248,6 @@ public class UopKafkaEventConsumer implements KafkaConsumerThreadMetadataProvide
         if (!events.isEmpty()) {
             deliveryService.deliverBatch(events);
         }
-    }
-
-    private void handleFailure(UopProcessingException failure) {
-        retrying = false;
-        failure.getErrors().forEach(error -> {
-            try {
-                handleUopProcessingFailure(error.cause(), error.uopKafkaEvent());
-            } catch (JsonProcessingException e) {
-                handleJsonProcessingFailure(error.cause(), error.uopKafkaEvent().toString(), null);
-            }
-        });
-    }
-
-    private void handleFailure(Throwable failure, ConsumerRecords<String, UopKafkaEvent> records, String additionalInfo) {
-        retrying = false;
-        if (records == null) {
-            handleNullConsumerRecordsFailure(failure);
-        } else {
-            records.forEach(kafkaRecord -> {
-                try {
-                    handleConsumerRecordFailure(failure, kafkaRecord, additionalInfo);
-                } catch (JsonProcessingException e) {
-                    handleJsonProcessingFailure(failure, kafkaRecord.value().toString(), additionalInfo);
-                }
-            });
-        }
-    }
-
-    @SuppressWarnings("java:S2629")
-    private void handleUopProcessingFailure(Throwable failure, UopKafkaEvent uopKafkaEvent) throws JsonProcessingException {
-        var originalRecord = objectMapper.writeValueAsString(uopKafkaEvent);
-        var exceptionMessage = ExceptionMessage.Builder.newBuilder()
-            .withUnexpectedException()
-            .withOriginalRecord(originalRecord)
-            .withStackTrace(failure)
-            .withTimestamp(System.currentTimeMillis())
-            .withSourceTopic(topic)
-            .build();
-        LOGGER.error(exceptionMessage.toLogMessage());
-    }
-
-    @SuppressWarnings("java:S2629")
-    private void handleJsonProcessingFailure(Throwable failure, String kafkaRecord, String additionalInfo) {
-        var exceptionMessage = ExceptionMessage.Builder.newBuilder()
-            .withUnexpectedException()
-            .withStackTrace(failure)
-            .withOriginalRecord(kafkaRecord)
-            .withTimestamp(System.currentTimeMillis())
-            .withAdditionalInfo(JSON_PROCESSING_MSG + (hasLength(additionalInfo) ? " " + additionalInfo : ""))
-            .build();
-        // once again we use the toJson() method because we need to know it happened, but
-        // don't want the exception pipeline to pick it up because it can't process it
-        LOGGER.error(exceptionMessage.toJson());
-    }
-
-    @SuppressWarnings("java:S2629")
-    private void handleConsumerRecordFailure(Throwable failure, ConsumerRecord<String, UopKafkaEvent> kafkaRecord, String additionalInfo)
-        throws JsonProcessingException {
-        var originalRecord = objectMapper.writeValueAsString(kafkaRecord.value());
-        var exceptionMessageBuilder = ExceptionMessage.Builder.newBuilder()
-            .withUnexpectedException()
-            .withOriginalRecord(originalRecord)
-            .withOffset(kafkaRecord.offset())
-            .withKey(kafkaRecord.key())
-            .withPartition(kafkaRecord.partition())
-            .withStackTrace(failure)
-            .withTimestamp(System.currentTimeMillis())
-            .withSourceTopic(topic);
-        if (hasLength(additionalInfo)) {
-            exceptionMessageBuilder.withAdditionalInfo(additionalInfo);
-        }
-        var exceptionMessage = exceptionMessageBuilder.build();
-        LOGGER.error(exceptionMessage.toLogMessage());
-    }
-
-    @SuppressWarnings("java:S2629")
-    private void handleNullConsumerRecordsFailure(Throwable failure) {
-        var exceptionMessage = ExceptionMessage.Builder.newBuilder()
-            .withUnexpectedException()
-            .withStackTrace(failure)
-            .withAdditionalInfo(NULL_RECORD_MSG)
-            .build();
-        // here we use the toJson() method because we need to know it happened, but
-        // don't want the exception pipeline to pick it up because it can't process it
-        LOGGER.error(exceptionMessage.toJson());
     }
 
     private void setTimerRunning() {
